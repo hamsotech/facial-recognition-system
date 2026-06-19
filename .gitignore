@@ -1,0 +1,17 @@
+# Python
+fastapi/venv/
+fastapi/__pycache__/
+fastapi/**/__pycache__/
+fastapi/*.pyc
+fastapi/.env
+
+# Java
+attendance/target/
+attendance/.mvn/wrapper/maven-wrapper.jar
+attendance/*.class
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.txt
