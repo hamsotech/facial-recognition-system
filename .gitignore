@@ -1,9 +1,9 @@
 # Python
-fastapi/venv/
-fastapi/__pycache__/
-fastapi/**/__pycache__/
-fastapi/*.pyc
-fastapi/.env
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
 
 # Java
 attendance/target/
@@ -14,4 +14,12 @@ attendance/*.class
 .vscode/
 .idea/
 *.iml
-*.txt
+
+# Model AI (không nên push)
+*.pt
+
+# Dataset (nếu không muốn đưa lên GitHub)
+dataset/
+
+# File văn bản tạm (nếu thực sự muốn bỏ qua)
+# *.txt
