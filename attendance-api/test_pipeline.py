@@ -11,8 +11,13 @@ from app.services.facenet_service import (
     get_embedding
 )
 
+import os
+img_path = "attendance-api/classroom.jpg"
+if not os.path.exists(img_path) and os.path.exists("classroom.jpg"):
+    img_path = "classroom.jpg"
+
 image, persons = detect_person(
-    "attendance-api/classroom.jpg"
+    img_path
 )
 
 print("Persons:", len(persons))
