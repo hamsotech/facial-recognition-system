@@ -1,0 +1,27 @@
+from facenet_pytorch import MTCNN
+import cv2
+import torch
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+mtcnn = MTCNN(
+    image_size=160,
+    margin=0,
+    min_face_size=20,
+    thresholds=[0.6, 0.7, 0.7],
+    factor=0.709,
+    post_process=True,
+    device=DEVICE,
+    keep_all=False
+)
+
+def align_face(person_image):
+    if person_image is None or person_image.size == 0:
+        return None
+    try:
+        rgb = cv2.cvtColor(person_image, cv2.COLOR_BGR2RGB)
+        face_tensor = mtcnn(rgb)
+        return face_tensor
+    except Exception as e:
+        print(f"[MTCNN] Lỗi căn chỉnh khuôn mặt: {e}")
+        return None
