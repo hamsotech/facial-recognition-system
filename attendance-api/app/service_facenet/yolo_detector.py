@@ -2,10 +2,12 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 
+# Load model một lần
 model = YOLO("yolov8n.pt")
 
-def detect_person(frame):
-    """
+
+def detect_person(image_or_path):
+   """
     Phát hiện người trong frame camera (Chỉ chấp nhận numpy array - Live camera).
     Không chấp nhận đường dẫn ảnh tĩnh (str).
     """
@@ -29,3 +31,16 @@ def detect_person(frame):
     # Xóa ảnh copy khỏi RAM ngay sau khi quét xong bounding box
     del image
     return persons
+
+
+def crop_person(image, person):
+    """
+    Cắt vùng ROI của người từ ảnh gốc.
+    """
+    h, w = image.shape[:2]
+    # Tránh tọa độ vượt quá biên ảnh
+    x1 = max(0, person["x1"])
+    y1 = max(0, person["y1"])
+    x2 = min(w, person["x2"])
+    y2 = min(h, person["y2"])
+    return image[y1:y2, x1:x2]
