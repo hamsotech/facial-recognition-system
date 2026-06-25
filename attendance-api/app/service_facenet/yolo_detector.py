@@ -6,8 +6,8 @@ import numpy as np
 model = YOLO("yolov8n.pt")
 
 
-def detect_person(image_or_path):
-   """
+def detect_person(frame):
+    """
     Phát hiện người trong frame camera (Chỉ chấp nhận numpy array - Live camera).
     Không chấp nhận đường dẫn ảnh tĩnh (str).
     """

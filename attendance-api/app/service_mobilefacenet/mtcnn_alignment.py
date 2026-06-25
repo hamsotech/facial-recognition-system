@@ -1,4 +1,5 @@
 from facenet_pytorch import MTCNN
+from PIL import Image
 import cv2
 import torch
 
@@ -20,7 +21,8 @@ def align_face(person_image):
         return None
     try:
         rgb = cv2.cvtColor(person_image, cv2.COLOR_BGR2RGB)
-        face_tensor = mtcnn(rgb)
+        pil_image = Image.fromarray(rgb)   # MTCNN cần PIL Image, không phải numpy
+        face_tensor = mtcnn(pil_image)
         return face_tensor
     except Exception as e:
         print(f"[MTCNN] Lỗi căn chỉnh: {e}")

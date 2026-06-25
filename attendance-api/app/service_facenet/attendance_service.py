@@ -4,7 +4,7 @@ BACKEND_API_URL = 'http://localhost:8080/api/attendance'
 
 def mark_attendance(student_id, session_id, confidence_score):
     """
-    Gọi REST API lưu điểm danh xuống cơ sở dữ liệu.
+    Gọi REST API lưu xuống cơ sở dữ liệu.
     """
     try:
         response = requests.post(

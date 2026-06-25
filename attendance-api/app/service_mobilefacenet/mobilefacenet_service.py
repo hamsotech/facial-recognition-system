@@ -7,10 +7,10 @@ import onnxruntime as ort
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Đường dẫn tới file model ONNX của MobileFaceNet
-MOBILEFACENET_MODEL_PATH = os.path.join(os.getcwd(), "models", "mobilefacenet.onnx")
+MOBILEFACENET_MODEL_PATH = os.path.join(os.getcwd(), "models", "MobileFaceNet.onnx")
 
 if not os.path.exists(MOBILEFACENET_MODEL_PATH):
-    raise FileNotFoundError(f"Lỗi: Hãy tạo thư mục 'models' và tải file mobilefacenet.onnx vào đường dẫn: {MOBILEFACENET_MODEL_PATH}")
+    raise FileNotFoundError(f"Lỗi: Hãy tạo thư mục 'models' và tải file MobileFaceNet.onnx vào đường dẫn: {MOBILEFACENET_MODEL_PATH}")
 
 _ort_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if DEVICE == "cuda" else ["CPUExecutionProvider"]
 _mobilefacenet = ort.InferenceSession(MOBILEFACENET_MODEL_PATH, providers=_ort_providers)
