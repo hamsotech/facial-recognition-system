@@ -1,13 +1,13 @@
-from app.services.yolo_detector import (
+from app.service_facenet.yolo_detector import (
     detect_person,
     crop_person
 )
 
-from app.services.mtcnn_alignment import (
+from app.service_facenet.mtcnn_alignment import (
     align_face
 )
 
-from app.services.facenet_service import (
+from app.service_facenet.facenet_service import (
     get_embedding
 )
 
