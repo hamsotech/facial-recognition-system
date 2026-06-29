@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────
+# Jetson Edge Agent — requirements
+# Cài đặt trên Jetson Orin/Nano (JetPack 6.x)
+# ─────────────────────────────────────────────────
+
+# HTTP
+requests==2.32.3
+python-dotenv==1.0.1
+
+# CV
+opencv-python==4.10.0.84
+Pillow==10.4.0
+
+# AI — NumPy
+numpy==1.26.4
+scipy==1.13.1
+
+# YOLO
+ultralytics==8.3.0
+
+# Face alignment
+facenet-pytorch==2.6.0
+
+# ONNX Runtime — GPU build cho Jetson
+# Jetson dùng build đặc biệt, KHÔNG dùng onnxruntime thường:
+#   pip install onnxruntime-gpu   (nếu JetPack cung cấp wheel)
+# Hoặc build từ source nếu cần:
+#   https://elinux.org/Jetson_Zoo#ONNX_Runtime
+onnxruntime-gpu==1.19.0
+
+# Jetson system stats (tùy chọn, cài để đọc GPU temp & load)
+jetson-stats==4.2.9
+
+# PyTorch — KHÔNG cài từ pip thông thường trên Jetson!
+# Tải đúng wheel từ NVIDIA:
+#   https://forums.developer.nvidia.com/c/agx-autonomous-machines/jetson/
+# JetPack 6.0 + Orin → torch 2.3.0+nv24.05
+# Cài bằng lệnh riêng sau khi cài file trên:
+#   pip install torch-2.3.0+nv24.05-cp310-cp310-linux_aarch64.whl
