@@ -6,44 +6,31 @@ import numpy as np
 model = YOLO("yolov8n.pt")
 
 
-def detect_person(image_or_path):
+def detect_person(frame):
     """
-    Phát hiện người trong ảnh hoặc frame camera.
-    image_or_path: có thể là đường dẫn ảnh (str) hoặc numpy array (BGR frame)
+    Phát hiện người trong frame camera (Chỉ chấp nhận numpy array - Live camera).
+    Không chấp nhận đường dẫn ảnh tĩnh (str).
     """
-    if isinstance(image_or_path, str):
-        image = cv2.imread(image_or_path)
-        if image is None:
-            raise FileNotFoundError(f"Không tìm thấy ảnh tại: {image_or_path}")
-    elif isinstance(image_or_path, np.ndarray):
-        image = image_or_path.copy()
-    else:
-        raise ValueError("Đầu vào phải là đường dẫn ảnh (str) hoặc mảng NumPy")
+    if not isinstance(frame, np.ndarray):
+        raise ValueError("[Bảo mật] Hệ thống chỉ chấp nhận hình ảnh trực tiếp từ camera (RAM). Không hỗ trợ ảnh tĩnh.")
 
-    results = model.predict(
-        source=image,
-        conf=0.5,
-        verbose=False
-    )
+    # Đảm bảo copy frame để không ảnh hưởng đến luồng gốc
+    image = frame.copy()
 
+    results = model.predict(source=image, conf=0.5, verbose=False)
     persons = []
 
     for result in results:
         for box in result.boxes:
             cls = int(box.cls[0])
-            # Chỉ lấy class person (class 0 trong COCO dataset)
-            if cls != 0:
+            if cls != 0: # Chỉ lấy người (class 0)
                 continue
-
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            persons.append({
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2
-            })
-
-    return image, persons
+            persons.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+            
+    # Xóa ảnh copy khỏi RAM ngay sau khi quét xong bounding box
+    del image
+    return persons
 
 
 def crop_person(image, person):

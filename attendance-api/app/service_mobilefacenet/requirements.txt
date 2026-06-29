@@ -1,0 +1,10 @@
+ultralytics
+opencv-python
+facenet-pytorch
+onnxruntime
+numpy
+scipy
+pillow
+torch
+torchvision
+requests
