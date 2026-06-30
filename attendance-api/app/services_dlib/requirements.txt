@@ -1,5 +1,0 @@
-dlib
-face-recognition
-opencv-python
-numpy
-requests
