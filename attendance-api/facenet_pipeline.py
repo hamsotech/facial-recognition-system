@@ -168,17 +168,38 @@ def load_local_dataset(dataset_dir: str) -> dict:
         return {}
 
     cache_path = os.path.join(dataset_dir, "facenet_local_cache.pkl")
+    subdirs = [d for d in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, d)) and d != "__pycache__"]
+
+    # 1. Kiểm tra tính hợp lệ của Cache tự động
     if os.path.exists(cache_path):
-        print(f"[Local Mode] Đã tìm thấy tệp cache embeddings. Đang load...")
         try:
             with open(cache_path, "rb") as f:
-                return pickle.load(f)
+                cached_data = pickle.load(f)
+            
+            # Kiểm tra xem danh sách thư mục con và các file ảnh bên trong có thay đổi không
+            cached_folders = {info["student_code"]: info for info in cached_data.values()}
+            if set(subdirs) == set(cached_folders.keys()):
+                cache_valid = True
+                for subdir in subdirs:
+                    folder = os.path.join(dataset_dir, subdir)
+                    images = [f for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                    cached_info = cached_folders.get(subdir)
+                    # Nếu danh sách file ảnh khác với danh sách trong cache
+                    if not cached_info or set(images) != set(cached_info.get("images", [])):
+                        cache_valid = False
+                        break
+                
+                if cache_valid:
+                    print(f"[Local Mode] Đã tải cache embeddings hợp lệ từ: {cache_path}")
+                    return cached_data
+                else:
+                    print(f"[Local Mode] Phát hiện thay đổi trong ảnh/thư mục dataset. Đang tự động quét lại...")
+            else:
+                print(f"[Local Mode] Phát hiện thêm/bớt thư mục người học. Đang tự động quét lại...")
         except Exception as e:
-            print(f"[Cảnh báo] Lỗi khi load cache: {e}. Tiến hành trích xuất lại.")
+            print(f"[Cảnh báo] Lỗi khi load cache: {e}. Tiến hành quét lại.")
 
     registered = {}
-    subdirs = [d for d in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, d))]
-
     for subdir in subdirs:
         student_name   = subdir
         student_folder = os.path.join(dataset_dir, subdir)
@@ -212,13 +233,14 @@ def load_local_dataset(dataset_dir: str) -> dict:
                 "student_code": student_name,
                 "research_id":  "",
                 "embeddings":   embeddings_list,   # List[np.ndarray] — từng ảnh riêng
+                "images":       images,            # Lưu danh sách file ảnh để check thay đổi
             }
             print(f"  ✓ {student_name} ({len(embeddings_list)} ảnh)")
 
     if registered:
         with open(cache_path, "wb") as f:
             pickle.dump(registered, f)
-        print(f"[Local Mode] Đã lưu cache tại {cache_path}")
+        print(f"[Local Mode] Đã lưu cache tự động tại {cache_path}")
 
     return registered
 

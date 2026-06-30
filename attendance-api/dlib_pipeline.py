@@ -137,17 +137,39 @@ def load_local_dataset(dataset_dir: str) -> dict:
         return {}
 
     cache_path = os.path.join(dataset_dir, "dlib_local_cache.pkl")
+    subdirs = [d for d in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, d)) and d != "__pycache__"]
+
+    # 1. Kiểm tra tính hợp lệ của Cache tự động
     if os.path.exists(cache_path):
         try:
             with open(cache_path, "rb") as f:
-                return pickle.load(f)
+                cached_data = pickle.load(f)
+            
+            # Kiểm tra xem danh sách thư mục con và các file ảnh bên trong có thay đổi không
+            cached_folders = {info["student_code"]: info for info in cached_data.values()}
+            if set(subdirs) == set(cached_folders.keys()):
+                cache_valid = True
+                for subdir in subdirs:
+                    folder = os.path.join(dataset_dir, subdir)
+                    images = [f for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                    cached_info = cached_folders.get(subdir)
+                    if not cached_info or set(images) != set(cached_info.get("images", [])):
+                        cache_valid = False
+                        break
+                
+                if cache_valid:
+                    print(f"[Local Mode] Đã tải cache embeddings hợp lệ từ: {cache_path}")
+                    return cached_data
+                else:
+                    print(f"[Local Mode] Phát hiện thay đổi trong ảnh/thư mục dataset. Đang tự động quét lại...")
+            else:
+                print(f"[Local Mode] Phát hiện thêm/bớt thư mục người học. Đang tự động quét lại...")
         except Exception as e:
-            print(f"[Cache] Lỗi: {e}. Trích xuất lại...")
+            print(f"[Cảnh báo] Lỗi khi load cache: {e}. Tiến hành quét lại.")
 
     registered = {}
-    for subdir in os.listdir(dataset_dir):
+    for subdir in subdirs:
         folder = os.path.join(dataset_dir, subdir)
-        if not os.path.isdir(folder): continue
         images = [f for f in os.listdir(folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
         embs = []
         for img_name in images:
@@ -164,8 +186,6 @@ def load_local_dataset(dataset_dir: str) -> dict:
                 print(f"  Lỗi {img_name}: {e}")
 
         if embs:
-            mean_emb = np.mean(embs, axis=0)
-            mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
             sid = str(uuid.uuid4())
             registered[sid] = {
                 "full_name":    subdir.replace("_", " "),
