@@ -10,27 +10,30 @@ import torch
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
-# Import các service cốt lõi từ thư mục app.services
-from app.services.yolo_detector import detect_person, crop_person
-from app.services.mtcnn_alignment import align_face
-from app.services.facenet_service import get_embedding
-from app.services.similarity_service import cosine_similarity
+load_dotenv()
+
+# Import shared services
+from app.shared.yolo_detector       import detect_person, crop_person
+from app.shared.mtcnn_alignment     import align_face
+from app.shared.similarity_service  import cosine_similarity
+from app.service_facenet.facenet_service import get_embedding
 
 # ══════════════════════════════════════════════════════════════════
 # CẤU HÌNH HỆ THỐNG
 # ══════════════════════════════════════════════════════════════════
 DB_CONFIG = {
-    "host":     "localhost",
-    "port":     5432,
-    "dbname":   "attendance_db",   # Tên database PostgreSQL
-    "user":     "postgres",
-    "password": "312005",          # Password thật của bạn
+    "host":     os.getenv("DB_HOST",     "localhost"),
+    "port":     int(os.getenv("DB_PORT", "5432")),
+    "dbname":   os.getenv("DB_NAME",     "attendance_db"),
+    "user":     os.getenv("DB_USER",     "postgres"),
+    "password": os.getenv("DB_PASSWORD", ""),   # Đặt trong file .env
 }
 
-SIMILARITY_THRESHOLD = 0.65  # Ngưỡng cosine similarity cho FaceNet (thường từ 0.60 - 0.70)
-SNAPSHOT_COOLDOWN    = 3     # Giây chờ giữa 2 lần chụp snapshot
-CAMERA_INDEX         = 0     # 0 = webcam mặc định
+SIMILARITY_THRESHOLD = float(os.getenv("FACENET_THRESHOLD",  "0.65"))
+SNAPSHOT_COOLDOWN    = float(os.getenv("SNAPSHOT_COOLDOWN",  "3.0"))
+CAMERA_INDEX         = int(os.getenv("CAMERA_INDEX",         "0"))
 
 # Thiết bị chạy (GPU CUDA hoặc CPU)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
