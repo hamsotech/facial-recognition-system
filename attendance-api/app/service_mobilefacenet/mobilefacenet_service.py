@@ -6,11 +6,25 @@ import onnxruntime as ort
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Đường dẫn tới file model ONNX của MobileFaceNet
-MOBILEFACENET_MODEL_PATH = os.path.join(os.getcwd(), "models", "MobileFaceNet.onnx")
+# Tìm đường dẫn tuyệt đối đến thư mục 'models' trong 'attendance-api'
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+# Lùi 2 cấp từ app/service_mobilefacenet -> attendance-api
+_api_root = os.path.dirname(os.path.dirname(_current_dir))
+MOBILEFACENET_MODEL_PATH = os.path.join(_api_root, "models", "MobileFaceNet.onnx")
+
+# Hỗ trợ fallback kiểm tra thêm ở thư mục chạy hiện tại (cwd) nếu không thấy ở trên
+if not os.path.exists(MOBILEFACENET_MODEL_PATH):
+    _cwd_fallback = os.path.join(os.getcwd(), "models", "MobileFaceNet.onnx")
+    if os.path.exists(_cwd_fallback):
+        MOBILEFACENET_MODEL_PATH = _cwd_fallback
 
 if not os.path.exists(MOBILEFACENET_MODEL_PATH):
-    raise FileNotFoundError(f"Lỗi: Hãy tạo thư mục 'models' và tải file MobileFaceNet.onnx vào đường dẫn: {MOBILEFACENET_MODEL_PATH}")
+    raise FileNotFoundError(
+        f"Lỗi: Hãy tạo thư mục 'models' và tải file MobileFaceNet.onnx vào đường dẫn:\n"
+        f"  1. {os.path.join(_api_root, 'models', 'MobileFaceNet.onnx')} (Khuyên dùng)\n"
+        f"  hoặc\n"
+        f"  2. {os.path.join(os.getcwd(), 'models', 'MobileFaceNet.onnx')}"
+    )
 
 _ort_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if DEVICE == "cuda" else ["CPUExecutionProvider"]
 _mobilefacenet = ort.InferenceSession(MOBILEFACENET_MODEL_PATH, providers=_ort_providers)
