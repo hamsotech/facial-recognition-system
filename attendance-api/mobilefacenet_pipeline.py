@@ -132,7 +132,7 @@ def record_attendance_db(conn, session_id: str, student_id: str, confidence: flo
 # CHẾ ĐỘ CỤC BỘ
 # ══════════════════════════════════════════════════════════════════
 def load_local_dataset(dataset_dir: str) -> dict:
-    """Quét thư mục dataset để trích xuất MobileFaceNet embeddings."""
+    """Quét thư mục dataset, lưu TẤT CẢ embedding riêng lẻ (Top-3 voting)."""
     print(f"\n[Local Mode] Đang quét: {dataset_dir}")
     if not os.path.exists(dataset_dir):
         os.makedirs(dataset_dir, exist_ok=True)
@@ -163,19 +163,19 @@ def load_local_dataset(dataset_dir: str) -> dict:
                 if face_tensor is not None:
                     emb = get_embedding(face_tensor)
                     if emb is not None:
-                        embs.append(emb)
+                        arr = emb if isinstance(emb, np.ndarray) else np.array(emb, dtype=np.float32)
+                        arr = arr / (np.linalg.norm(arr) + 1e-8)
+                        embs.append(arr)
             except Exception as e:
                 print(f"  Lỗi {img_name}: {e}")
 
         if embs:
-            mean_emb = np.mean(embs, axis=0)
-            mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
             sid = str(uuid.uuid4())
             registered[sid] = {
                 "full_name":    subdir.replace("_", " "),
                 "student_code": subdir,
                 "research_id":  "",
-                "embedding":    mean_emb,
+                "embeddings":   embs,   # List[np.ndarray]
             }
             print(f"  ✓ {subdir} ({len(embs)} ảnh)")
 
@@ -189,15 +189,33 @@ def load_local_dataset(dataset_dir: str) -> dict:
 # TÌM KHỚP TỐT NHẤT
 # ══════════════════════════════════════════════════════════════════
 def find_best_match(query_emb: np.ndarray, registered: dict, enrolled_ids: set = None):
-    best_id, best_info, best_sim = None, None, -1.0
+    """Top-3 voting: so với từng ảnh mẫu, lấy Top 3, trung bình so với threshold."""
+    from collections import Counter
+    all_scores = []
     for sid, info in registered.items():
         if enrolled_ids is not None and sid not in enrolled_ids: continue
-        sim = cosine_similarity(query_emb, info["embedding"])
-        if sim > best_sim:
-            best_sim, best_id, best_info = sim, sid, info
-    if best_sim >= SIMILARITY_THRESHOLD:
-        return best_id, best_info, best_sim
-    return None, None, best_sim
+        emb_list = info.get("embeddings") or [info.get("embedding")]
+        for emb in emb_list:
+            if emb is None: continue
+            sim = cosine_similarity(query_emb, emb)
+            all_scores.append((sim, sid, info))
+
+    if not all_scores:
+        return None, None, -1.0
+
+    all_scores.sort(key=lambda x: x[0], reverse=True)
+    top3      = all_scores[:3]
+    avg_sim   = sum(s[0] for s in top3) / len(top3)
+    winner_sid  = Counter(s[1] for s in top3).most_common(1)[0][0]
+    winner_info = registered[winner_sid]
+
+    names = [registered[s[1]]["full_name"] for s in top3]
+    sims  = [round(s[0], 4) for s in top3]
+    print(f"    [Top3] {list(zip(names, sims))} | avg={avg_sim:.4f} | winner={winner_info['full_name']}")
+
+    if avg_sim >= SIMILARITY_THRESHOLD:
+        return winner_sid, winner_info, avg_sim
+    return None, None, avg_sim
 
 # ══════════════════════════════════════════════════════════════════
 # PIPELINE CHÍNH

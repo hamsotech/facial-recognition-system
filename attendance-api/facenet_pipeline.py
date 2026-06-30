@@ -154,14 +154,12 @@ def record_attendance_db(conn, session_id: str, student_id: str, confidence: flo
 # ══════════════════════════════════════════════════════════════════
 def load_local_dataset(dataset_dir: str) -> dict:
     """
-    Quét thư mục dataset_dir cục bộ để trích xuất embeddings.
-    Thư mục có cấu trúc:
+    Quét thư mục dataset_dir, lưu TẤT CẢ embedding riêng lẻ của từng ảnh.
+    (Không lấy trung bình — để find_best_match dùng Top-3 voting)
+    Cấu trúc:
         dataset/
-            Nguyen_Van_A/
-                a1.jpg
-                a2.jpg
+            Nguyen_Van_A/  -> nhiều ảnh -> nhiều embeddings
             Tran_Thi_B/
-                b1.jpg
     """
     print(f"\n[Local Mode] Đang quét thư mục dataset: {dataset_dir}")
     if not os.path.exists(dataset_dir):
@@ -170,7 +168,6 @@ def load_local_dataset(dataset_dir: str) -> dict:
         return {}
 
     cache_path = os.path.join(dataset_dir, "facenet_local_cache.pkl")
-    # Nếu đã có cache, load trực tiếp cho nhanh
     if os.path.exists(cache_path):
         print(f"[Local Mode] Đã tìm thấy tệp cache embeddings. Đang load...")
         try:
@@ -183,7 +180,7 @@ def load_local_dataset(dataset_dir: str) -> dict:
     subdirs = [d for d in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, d))]
 
     for subdir in subdirs:
-        student_name = subdir
+        student_name   = subdir
         student_folder = os.path.join(dataset_dir, subdir)
         images = [f for f in os.listdir(student_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
@@ -194,44 +191,34 @@ def load_local_dataset(dataset_dir: str) -> dict:
                 img = cv2.imread(img_path)
                 if img is None:
                     continue
-                # 1. Phát hiện người bằng YOLOv8
                 persons = detect_person(img)
                 if not persons:
                     continue
-                
-                # 2. Lấy người đầu tiên và căn chỉnh khuôn mặt bằng MTCNN
-                roi = crop_person(img, persons[0])
+                roi         = crop_person(img, persons[0])
                 face_tensor = align_face(roi)
-                
                 if face_tensor is not None:
-                    # 3. Trích xuất FaceNet embedding
                     emb = get_embedding(face_tensor)
                     if emb is not None:
-                        embeddings_list.append(emb.numpy())
+                        arr = emb.numpy() if hasattr(emb, 'numpy') else np.array(emb, dtype=np.float32)
+                        arr = arr / (np.linalg.norm(arr) + 1e-8)  # L2-normalize
+                        embeddings_list.append(arr)
             except Exception as e:
-                print(f"Lỗi khi trích xuất {img_path}: {e}")
+                print(f"  Lỗi khi trích xuất {img_path}: {e}")
 
         if embeddings_list:
-            # Lấy trung bình cộng các vector ảnh của cùng một người để tạo vector đại diện tối ưu nhất
-            mean_embedding = np.mean(embeddings_list, axis=0)
-            # Chuẩn hóa L2 norm
-            mean_embedding = mean_embedding / np.linalg.norm(mean_embedding)
-            
-            # Tạo UUID ngẫu nhiên cho Local Mode
             sid = str(uuid.uuid4())
             registered[sid] = {
-                "full_name": student_name.replace("_", " "),
+                "full_name":    student_name.replace("_", " "),
                 "student_code": student_name,
-                "research_id": "",
-                "embedding": mean_embedding
+                "research_id":  "",
+                "embeddings":   embeddings_list,   # List[np.ndarray] — từng ảnh riêng
             }
-            print(f"  ✓ Đã đăng ký thành công: {student_name} ({len(embeddings_list)} ảnh)")
+            print(f"  ✓ {student_name} ({len(embeddings_list)} ảnh)")
 
-    # Lưu cache lại
     if registered:
         with open(cache_path, "wb") as f:
             pickle.dump(registered, f)
-        print(f"[Local Mode] Đã lưu cache embeddings tại {cache_path}")
+        print(f"[Local Mode] Đã lưu cache tại {cache_path}")
 
     return registered
 
@@ -240,27 +227,51 @@ def load_local_dataset(dataset_dir: str) -> dict:
 # ══════════════════════════════════════════════════════════════════
 def find_best_match(query_emb: np.ndarray, registered: dict, enrolled_ids: set = None):
     """
-    So sánh độ tương đồng cosine giữa query_emb với cơ sở dữ liệu.
-    Nếu enrolled_ids được truyền, chỉ so sánh với những sinh viên thuộc danh sách này.
+    Top-3 Voting:
+      1. Tính cosine similarity giữa query với TẤT CẢ ảnh mẫu riêng lẻ
+         (mỗi sinh viên có thể có nhiều ảnh → nhiều embeddings)
+      2. Sắp xếp tất cả kết quả theo sim giảm dần, lấy Top 3
+      3. Tính trung bình điểm của Top 3 → so với SIMILARITY_THRESHOLD
+      4. Người chiến thắng = sinh viên xuất hiện nhiều nhất trong Top 3
     """
-    best_id   = None
-    best_info = None
-    best_sim  = -1.0
-
+    # Duyệt qua tất cả ảnh mẫu, tạo danh sách phẳng (sid, info, emb, sim)
+    all_scores = []
     for sid, info in registered.items():
-        # Lọc theo danh sách lớp nếu ở chế độ PostgreSQL
         if enrolled_ids is not None and sid not in enrolled_ids:
             continue
 
-        sim = cosine_similarity(query_emb, info["embedding"])
-        if sim > best_sim:
-            best_sim  = sim
-            best_id   = sid
-            best_info = info
+        # Hỗ trợ cả cấu trúc cũ (embedding đơn) lẫn mới (embeddings list)
+        emb_list = info.get("embeddings") or [info.get("embedding")]
+        for emb in emb_list:
+            if emb is None:
+                continue
+            sim = cosine_similarity(query_emb, emb)
+            all_scores.append((sim, sid, info))
 
-    if best_sim >= SIMILARITY_THRESHOLD:
-        return best_id, best_info, best_sim
-    return None, None, best_sim
+    if not all_scores:
+        return None, None, -1.0
+
+    # Sắp xếp giảm dần, lấy Top 3
+    all_scores.sort(key=lambda x: x[0], reverse=True)
+    top3 = all_scores[:3]
+
+    # Tính trung bình điểm Top 3
+    avg_sim = sum(s[0] for s in top3) / len(top3)
+
+    # Đếm vote: sinh viên nào xuất hiện nhiều nhất trong Top 3
+    from collections import Counter
+    vote_counter = Counter(s[1] for s in top3)   # {sid: count}
+    winner_sid   = vote_counter.most_common(1)[0][0]
+    winner_info  = registered[winner_sid]
+
+    # Log chi tiết để tinh chỉnh ngưỡng
+    names = [registered[s[1]]["full_name"] for s in top3]
+    sims  = [round(s[0], 4) for s in top3]
+    print(f"    [Top3] {list(zip(names, sims))} | avg={avg_sim:.4f} | winner={winner_info['full_name']}")
+
+    if avg_sim >= SIMILARITY_THRESHOLD:
+        return winner_sid, winner_info, avg_sim
+    return None, None, avg_sim
 
 # ══════════════════════════════════════════════════════════════════
 # XỬ LÝ FRAME CAMERA (SNAPSHOT)
