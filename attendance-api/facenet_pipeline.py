@@ -191,8 +191,11 @@ def load_local_dataset(dataset_dir: str) -> dict:
         for img_name in images:
             img_path = os.path.join(student_folder, img_name)
             try:
+                img = cv2.imread(img_path)
+                if img is None:
+                    continue
                 # 1. Phát hiện người bằng YOLOv8
-                img, persons = detect_person(img_path)
+                persons = detect_person(img)
                 if not persons:
                     continue
                 

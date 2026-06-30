@@ -157,7 +157,6 @@ def load_local_dataset(dataset_dir: str) -> dict:
             if img is None:
                 continue
             try:
-                _, persons = detect_person(img), None
                 persons_list = detect_person(img)
                 if not persons_list:
                     continue
