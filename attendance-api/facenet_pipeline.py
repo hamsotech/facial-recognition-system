@@ -386,7 +386,7 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
         prev_frame = frame.copy()
 
         # Real-time preview: Vẽ box xanh lá cho tất cả mọi người phát hiện được bằng YOLOv8
-        _, persons = detect_person(frame)
+        persons = detect_person(frame)
         for person in persons:
             cv2.rectangle(display, 
                           (person["x1"], person["y1"]), 
@@ -414,7 +414,7 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             person_box = persons[0]  # Lưu box người để vẽ nhãn
             
             for f in frames_seq:
-                _, persons_seq = detect_person(f)
+                persons_seq = detect_person(f)
                 if persons_seq:
                     roi_seq = crop_person(f, persons_seq[0])
                     face_tensor_seq = align_face(roi_seq)
