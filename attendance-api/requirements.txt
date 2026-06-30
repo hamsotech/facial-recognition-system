@@ -1,59 +1,45 @@
-# ══════════════════════════════════════════════════════════════════
+# ==================================================================
 # attendance-api/requirements.txt
-# Gộp từ: requirements.txt + service_arcface + service_mobilefacenet
-#          + services_dlib
 #
-# Cài đặt: pip install -r requirements.txt
-#
-# Lưu ý PyTorch:
-#   - Máy thường (Windows/Linux CUDA): pip install torch torchvision
-#     --index-url https://download.pytorch.org/whl/cu118
-#   - Jetson Orin/Nano: tải wheel từ
-#     https://forums.developer.nvidia.com/c/agx-autonomous-machines/jetson/
-# ══════════════════════════════════════════════════════════════════
+# Installation: pip install -r requirements.txt
+# ==================================================================
 
-# ── Web Framework ─────────────────────────────────────────────────
-fastapi==0.115.0
-uvicorn==0.30.0
+# -- Web Framework --
+fastapi
+uvicorn
 
-# ── Database ──────────────────────────────────────────────────────
-sqlalchemy==2.0.36
-psycopg2-binary==2.9.9
+# -- Database --
+sqlalchemy
+psycopg2-binary
 
-# ── Config & HTTP ─────────────────────────────────────────────────
-python-dotenv==1.0.1
-httpx==0.27.2
-requests==2.32.3
+# -- Config & HTTP --
+python-dotenv
+httpx
+requests
 
-# ── Data Validation ───────────────────────────────────────────────
-pydantic==2.9.2
-pydantic-settings==2.5.2
+# -- Data Validation --
+pydantic
+pydantic-settings
 
-# ── Vision & Image ────────────────────────────────────────────────
-opencv-python==4.10.0.84
-Pillow==10.4.0
+# -- Vision & Image --
+opencv-python
+Pillow
 
-# ── Numeric ───────────────────────────────────────────────────────
-numpy==1.26.4
-scipy==1.13.1
+# -- Numeric --
+numpy
+scipy
 
-# ── Deep Learning (CPU build mặc định — xem note PyTorch ở trên) ──
+# -- Deep Learning --
 torch
 torchvision
 
-# ── Face Detection & Alignment ────────────────────────────────────
-facenet-pytorch==2.6.0          # MTCNN + InceptionResnetV1 (FaceNet)
-ultralytics==8.3.0              # YOLOv8
+# -- Face Detection & Alignment --
+facenet-pytorch
+ultralytics
 
-# ── Face Recognition Models ───────────────────────────────────────
-insightface                     # ArcFace (buffalo_l)
-onnxruntime-gpu                 # ONNX Runtime với CUDA — thay bằng onnxruntime nếu không có GPU
+# -- Face Recognition Models --
+insightface
+onnxruntime
 
-# ── Dlib (chỉ cần nếu dùng services_dlib) ────────────────────────
-# dlib cần Visual C++ Build Tools (Windows) hoặc cmake (Linux)
-# Bỏ comment 2 dòng dưới nếu muốn dùng Dlib pipeline:
-# dlib
-# face-recognition
-
-# ── Visualization (benchmark) ─────────────────────────────────────
+# -- Visualization (benchmark) --
 matplotlib

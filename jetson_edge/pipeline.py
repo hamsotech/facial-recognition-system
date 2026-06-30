@@ -328,7 +328,8 @@ def run_pipeline(session_id: str):
     print_gpu_report(dm.stats)
 
     if not dm.stats.available:
-        logger.warning("⚠️  Không có GPU! Pipeline sẽ chạy chậm trên CPU.")
+        logger.critical("❌ LỖI: Không phát hiện thấy GPU CUDA! Hệ thống yêu cầu bắt buộc có GPU để chạy.")
+        sys.exit(1)
     else:
         logger.info(f"✅ Sử dụng GPU: {dm.stats.device_name} | "
                     f"VRAM: {dm.stats.total_vram_mb:.0f} MB")

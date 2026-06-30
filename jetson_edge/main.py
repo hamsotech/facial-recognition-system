@@ -34,11 +34,6 @@ def parse_args():
         action="store_true",
         help="Chỉ kiểm tra GPU và in thông tin, không chạy pipeline"
     )
-    parser.add_argument(
-        "--no-gpu-warn",
-        action="store_true",
-        help="Cho phép chạy trên CPU mà không cảnh báo (không khuyến nghị)"
-    )
     return parser.parse_args()
 
 
@@ -70,22 +65,16 @@ def main():
         logger.info("--check-gpu: Kiểm tra xong, thoát chương trình.")
         sys.exit(0)
 
-    # Cảnh báo nếu không có GPU
-    if not gpu_stats.available and not args.no_gpu_warn:
-        logger.warning("=" * 58)
-        logger.warning("⚠️  CẢNH BÁO: Không phát hiện thấy GPU CUDA!")
-        logger.warning("   Pipeline sẽ chạy trên CPU — có thể quá chậm cho realtime.")
-        logger.warning("   Nếu Jetson của bạn có GPU, hãy kiểm tra:")
-        logger.warning("   1. JetPack đã cài đúng chưa? (jetson_release)")
-        logger.warning("   2. PyTorch đúng phiên bản Jetson chưa?")
-        logger.warning("      https://forums.developer.nvidia.com/c/agx-autonomous-machines/jetson/")
-        logger.warning("   Thêm --no-gpu-warn để bỏ qua cảnh báo này.")
-        logger.warning("=" * 58)
-
-        confirm = input("\n❓ Bạn có muốn tiếp tục trên CPU không? [y/N]: ").strip().lower()
-        if confirm != "y":
-            logger.info("Đã hủy. Thoát chương trình.")
-            sys.exit(0)
+    # Yêu cầu bắt buộc phải có GPU CUDA
+    if not gpu_stats.available:
+        logger.critical("=" * 58)
+        logger.critical("❌ LỖI: Không phát hiện thấy GPU CUDA!")
+        logger.critical("   Hệ thống bắt buộc phải sử dụng GPU để xử lý.")
+        logger.critical("   Nếu Jetson của bạn có GPU, hãy kiểm tra lại:")
+        logger.critical("   1. JetPack đã được cài đặt chính xác chưa? (jetson_release)")
+        logger.critical("   2. Phiên bản PyTorch đã tích hợp CUDA chưa?")
+        logger.critical("=" * 58)
+        sys.exit(1)
 
     # ── Chạy pipeline chính ──────────────────────────────────────
     logger.info(f"[Main] Khởi động pipeline với session_id: {args.session_id}")
