@@ -370,9 +370,18 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hệ thống điểm danh Dlib face_recognition")
     parser.add_argument("session_id", nargs="?", default=None, help="UUID phiên học (PostgreSQL)")
-    parser.add_argument("--local",   action="store_true", help="Chạy cục bộ không cần DB")
-    parser.add_argument("--dataset", default="dataset",   help="Thư mục ảnh dataset cục bộ")
+    parser.add_argument("--local",     action="store_true",  help="Chạy cục bộ không cần DB")
+    parser.add_argument("--dataset",   default="dataset",    help="Thư mục ảnh dataset cục bộ")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Ngưỡng cosine similarity (0.0-1.0). Mặc định: DLIB_THRESHOLD trong .env hoặc 0.65")
     args = parser.parse_args()
+
+    if args.threshold is not None:
+        if not 0.0 < args.threshold < 1.0:
+            print("[Lỗi] --threshold phải nằm trong khoảng (0.0, 1.0)")
+            sys.exit(1)
+        SIMILARITY_THRESHOLD = args.threshold
+        print(f"[Config] Ngưỡng nhận diện được đặt thủ công: {SIMILARITY_THRESHOLD}")
 
     if args.local or args.session_id is None:
         run_pipeline(is_local=True, dataset_dir=args.dataset)
