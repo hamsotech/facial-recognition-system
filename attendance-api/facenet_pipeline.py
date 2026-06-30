@@ -33,7 +33,8 @@ DB_CONFIG = {
 
 SIMILARITY_THRESHOLD = float(os.getenv("FACENET_THRESHOLD",  "0.65"))
 SNAPSHOT_COOLDOWN    = float(os.getenv("SNAPSHOT_COOLDOWN",  "3.0"))
-CAMERA_INDEX         = int(os.getenv("CAMERA_INDEX",         "0"))
+_cam_index_raw       = os.getenv("CAMERA_INDEX",         "0")
+CAMERA_INDEX         = int(_cam_index_raw) if _cam_index_raw.isdigit() else _cam_index_raw
 
 # Thiết bị chạy (Bắt buộc phải có GPU CUDA)
 if not torch.cuda.is_available():

@@ -11,7 +11,9 @@ SERVER_URL        = os.getenv("SERVER_URL",       "http://192.168.1.100:8000")
 INTERNAL_API_KEY  = os.getenv("INTERNAL_API_KEY", "change-me-in-dotenv")
 
 # ── Camera ───────────────────────────────────────────────────────
-CAMERA_INDEX      = int(os.getenv("CAMERA_INDEX", "0"))
+# Hỗ trợ cả số nguyên (USB cam) và chuỗi (RTSP URL cho IP cam)
+_cam_index_raw = os.getenv("CAMERA_INDEX", "0")
+CAMERA_INDEX   = int(_cam_index_raw) if _cam_index_raw.isdigit() else _cam_index_raw
 
 # ── AI Thresholds ─────────────────────────────────────────────────
 SIMILARITY_THRESHOLD   = float(os.getenv("SIMILARITY_THRESHOLD",  "0.65"))

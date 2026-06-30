@@ -33,7 +33,8 @@ DB_CONFIG = {
 
 SIMILARITY_THRESHOLD = float(os.getenv("ARCFACE_THRESHOLD",  "0.50"))
 SNAPSHOT_COOLDOWN    = float(os.getenv("SNAPSHOT_COOLDOWN",  "3.0"))
-CAMERA_INDEX         = int(os.getenv("CAMERA_INDEX",         "0"))
+_cam_index_raw       = os.getenv("CAMERA_INDEX",         "0")
+CAMERA_INDEX         = int(_cam_index_raw) if _cam_index_raw.isdigit() else _cam_index_raw
 MODEL_NAME           = "arcface"
 
 # Thiết bị chạy (Bắt buộc phải có GPU CUDA)
