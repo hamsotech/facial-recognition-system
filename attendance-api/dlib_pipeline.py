@@ -6,6 +6,7 @@ import uuid
 import argparse
 import pickle
 import numpy as np
+import torch
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
@@ -33,6 +34,11 @@ SIMILARITY_THRESHOLD = float(os.getenv("DLIB_THRESHOLD",   "0.65"))
 SNAPSHOT_COOLDOWN    = float(os.getenv("SNAPSHOT_COOLDOWN", "3.0"))
 CAMERA_INDEX         = int(os.getenv("CAMERA_INDEX",        "0"))
 MODEL_NAME           = "dlib"
+
+# Thiết bị chạy (Bắt buộc phải có GPU CUDA)
+if not torch.cuda.is_available():
+    print("[!] LỖI: Không phát hiện thấy GPU CUDA! Hệ thống bắt buộc phải sử dụng GPU để chạy.")
+    sys.exit(1)
 
 print("[Dlib Pipeline] Khởi động...")
 print("[Dlib] Lưu ý: Dlib tự phát hiện khuôn mặt, không cần YOLO + MTCNN.")

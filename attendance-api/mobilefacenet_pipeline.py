@@ -37,7 +37,12 @@ SNAPSHOT_COOLDOWN    = float(os.getenv("SNAPSHOT_COOLDOWN",        "3.0"))
 CAMERA_INDEX         = int(os.getenv("CAMERA_INDEX",               "0"))
 MODEL_NAME           = "mobilefacenet"
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Thiết bị chạy (Bắt buộc phải có GPU CUDA)
+if not torch.cuda.is_available():
+    print("[!] LỖI: Không phát hiện thấy GPU CUDA! Hệ thống bắt buộc phải sử dụng GPU để chạy.")
+    sys.exit(1)
+
+DEVICE = "cuda"
 print(f"[MobileFaceNet Pipeline] Thiết bị: {DEVICE}")
 
 # ══════════════════════════════════════════════════════════════════
