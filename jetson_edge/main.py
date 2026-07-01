@@ -7,6 +7,7 @@ Cách dùng:
   python main.py <session_id> --no-gpu-check  # Bỏ qua kiểm tra và chạy ngay
 """
 
+import os
 import sys
 import uuid
 import argparse
@@ -46,6 +47,7 @@ def validate_session_id(session_id: str) -> bool:
 
 
 def main():
+    
     args = parse_args()
 
     # ── Validate session_id ──────────────────────────────────────
