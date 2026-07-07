@@ -11,6 +11,7 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from collections import deque  # Thêm hàng đợi tuần hoàn để lưu buffer khung hình
 
 load_dotenv()
 
@@ -37,6 +38,9 @@ _cam_index_raw       = os.getenv("CAMERA_INDEX",         "0")
 CAMERA_INDEX         = int(_cam_index_raw) if _cam_index_raw.isdigit() else _cam_index_raw
 MODEL_NAME           = "arcface"
 
+# Tự động đọc cấu hình loại camera sử dụng trên Jetson Orin/Nano
+USE_CSI = os.getenv("USE_CSI", "true").lower() == "true"
+
 # Thiết bị chạy (Bắt buộc phải có GPU CUDA)
 if not torch.cuda.is_available():
     print("[!] LỖI: Không phát hiện thấy GPU CUDA! Hệ thống bắt buộc phải sử dụng GPU để chạy.")
@@ -44,6 +48,20 @@ if not torch.cuda.is_available():
 
 DEVICE = "cuda"
 print(f"[ArcFace Pipeline] Thiết bị: {DEVICE}")
+
+# ══════════════════════════════════════════════════════════════════
+# HÀM TẠO GSTREAMER PIPELINE CHO CAMERA CSI JETSON
+# ══════════════════════════════════════════════════════════════════
+def get_gstreamer_pipeline(sensor_id=0, width=1280, height=720, flip_method=2):
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM),width={width},height={height},format=NV12,framerate=30/1 ! "
+        f"nvvidconv flip-method={flip_method} ! "
+        f"video/x-raw,format=BGRx ! "
+        f"videoconvert ! "
+        f"video/x-raw,format=BGR ! "
+        f"appsink drop=true max-buffers=1 sync=false"
+    )
 
 # ══════════════════════════════════════════════════════════════════
 # CHUYỂN ĐỔI EMBEDDING ↔ BYTES (bytea PostgreSQL)
@@ -147,7 +165,6 @@ def load_local_dataset(dataset_dir: str) -> dict:
             with open(cache_path, "rb") as f:
                 cached_data = pickle.load(f)
             
-            # Kiểm tra xem danh sách thư mục con và các file ảnh bên trong có thay đổi không
             cached_folders = {info["student_code"]: info for info in cached_data.values()}
             if set(subdirs) == set(cached_folders.keys()):
                 cache_valid = True
@@ -200,7 +217,7 @@ def load_local_dataset(dataset_dir: str) -> dict:
                 "student_code": subdir,
                 "research_id":  "",
                 "embeddings":   embs,   # List[np.ndarray]
-                "images":       images, # Lưu danh sách file ảnh để check thay đổi
+                "images":       images, 
             }
             print(f"  ✓ {subdir} ({len(embs)} ảnh)")
 
@@ -278,8 +295,15 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
         if conn: conn.close()
         return
 
-    # 2. Mở camera
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    # 2. Mở camera với hỗ trợ tăng tốc CSI (GStreamer)
+    if USE_CSI and str(CAMERA_INDEX).isdigit():
+        print(f"[ArcFace] Đang mở Camera CSI (Sensor ID: {CAMERA_INDEX}) qua GStreamer...")
+        gstreamer_str = get_gstreamer_pipeline(sensor_id=int(CAMERA_INDEX))
+        cap = cv2.VideoCapture(gstreamer_str, cv2.CAP_GSTREAMER)
+    else:
+        print(f"[ArcFace] Đang mở Webcam thông thường (Index: {CAMERA_INDEX})...")
+        cap = cv2.VideoCapture(int(CAMERA_INDEX) if str(CAMERA_INDEX).isdigit() else CAMERA_INDEX)
+
     if not cap.isOpened():
         print(f"[!] Không mở được camera (index={CAMERA_INDEX}).")
         if conn: conn.close()
@@ -289,6 +313,9 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
     last_snap      = 0.0
     prev_frame     = None
     LIVENESS_THRESHOLD = 1.4
+    
+    # Khởi tạo bộ đệm lưu 3 khung hình real-time gần nhất để check liveness không block hình
+    frame_buffer = deque(maxlen=3)
 
     print("\n" + "═"*60)
     print("  🎓  ARCFACE PIPELINE — ĐIỂM DANH REALTIME")
@@ -305,6 +332,9 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
 
         now     = time.time()
         display = frame.copy()
+        
+        # Liên tục lưu khung hình real-time vào bộ đệm tuần hoàn
+        frame_buffer.append(frame.copy())
 
         # Kiểm tra camera đóng băng
         if prev_frame is not None and np.mean(cv2.absdiff(frame, prev_frame)) == 0.0:
@@ -316,26 +346,31 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             continue
         prev_frame = frame.copy()
 
-        # Detect người
+        # Detect người bằng YOLOv8
         persons = detect_person(frame)
         for p in persons:
             cv2.rectangle(display, (p["x1"], p["y1"]), (p["x2"], p["y2"]), (0, 255, 0), 2)
 
+        # Xử lý snapshot sau khoảng thời gian cooldown (Không chặn/gây lag màn hình hiển thị)
         if persons and (now - last_snap >= SNAPSHOT_COOLDOWN):
+            # Chỉ xử lý khi bộ đệm thu thập đủ ít nhất 3 khung hình gần nhất từ camera
+            if len(frame_buffer) < 3:
+                continue
+
             last_snap = now
             ts = datetime.now().strftime("%H:%M:%S")
-            print(f"\n[{ts}] Phát hiện người → Kiểm tra liveness...")
-
-            # Liveness check: chụp 3 frame
-            frames_seq = [frame.copy()]
-            for _ in range(2):
-                time.sleep(0.12)
-                ok, f = cap.read()
-                frames_seq.append(f.copy() if ok else frame.copy())
+            print(f"\n[{ts}] Phát hiện người → Kiểm tra liveness dựa trên bộ đệm frame...")
 
             aligned_faces = []
-            for f in frames_seq:
-                pl = detect_person(f)
+            buffer_list = list(frame_buffer)
+            
+            for idx, f in enumerate(buffer_list):
+                # Tiết kiệm tài nguyên: Khung hình cuối cùng chính là ảnh hiện tại đã chạy YOLOv8
+                if idx == len(buffer_list) - 1:
+                    pl = persons
+                else:
+                    pl = detect_person(f)
+                    
                 if not pl: continue
                 roi = crop_person(f, pl[0])
                 ft  = align_face(roi)
@@ -346,7 +381,7 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
                 aligned_faces.append(face_gray)
 
             if len(aligned_faces) < 3:
-                print(f"[{ts}] Không đủ frame liveness — bỏ qua.")
+                print(f"[{ts}] Không đủ khuôn mặt hợp lệ trong bộ đệm — bỏ qua phiên liveness này.")
                 continue
 
             d1 = np.mean(cv2.absdiff(aligned_faces[0], aligned_faces[1]))
@@ -354,7 +389,7 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             mean_mad = (d1 + d2) / 2.0
 
             if mean_mad < LIVENESS_THRESHOLD:
-                print(f"[{ts}] ❌ ẢNH TĨNH GIẢ MẠO! MAD={mean_mad:.4f}")
+                print(f"[{ts}] ❌ PHÁT HIỆN GIẢ MẠO ẢNH TĨNH! MAD={mean_mad:.4f}")
                 p0 = persons[0]
                 cv2.rectangle(display, (p0["x1"], p0["y1"]), (p0["x2"], p0["y2"]), (0,0,255), 3)
                 cv2.putText(display, "GIA MAO ANH TINH!", (p0["x1"], p0["y1"]-10),
@@ -363,7 +398,8 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
 
             print(f"[{ts}] ✓ Liveness OK (MAD={mean_mad:.4f}) → Trích xuất ArcFace embedding...")
 
-            roi = crop_person(frames_seq[-1], persons[0])
+            # Lấy khuôn mặt ở khung hình cuối cùng thu được để trích xuất nhận dạng
+            roi = crop_person(buffer_list[-1], persons[0])
             ft  = align_face(roi)
             if ft is None:
                 print(f"[{ts}] Không tìm thấy mặt."); continue
@@ -383,9 +419,9 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             elif matched_id in attended:
                 name  = matched_info["full_name"]
                 code  = matched_info["student_code"]
-                label = f"{name} ({code}) — Đã điểm danh"
+                label = f"{name} ({code}) — Da diem danh"
                 color = (0, 165, 255)
-                print(f"[{ts}] {name} đã điểm danh rồi.")
+                print(f"[{ts}] {name} đã điểm danh từ trước.")
             else:
                 name  = matched_info["full_name"]
                 code  = matched_info["student_code"]
@@ -418,6 +454,7 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
     cv2.destroyAllWindows()
     attended.clear()
     registered.clear()
+    frame_buffer.clear()
     if conn: conn.close()
     print("\n[ArcFace] Đã kết thúc phiên và giải phóng tài nguyên.\n")
 

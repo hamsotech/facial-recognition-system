@@ -11,6 +11,7 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from collections import deque  # Thêm hàng đợi để tối ưu buffer camera
 
 load_dotenv()
 
@@ -36,6 +37,9 @@ SNAPSHOT_COOLDOWN    = float(os.getenv("SNAPSHOT_COOLDOWN",  "3.0"))
 _cam_index_raw       = os.getenv("CAMERA_INDEX",         "0")
 CAMERA_INDEX         = int(_cam_index_raw) if _cam_index_raw.isdigit() else _cam_index_raw
 
+# Cấu hình loại camera sử dụng trên Jetson (CSI hoặc USB)
+USE_CSI = os.getenv("USE_CSI", "true").lower() == "true"
+
 # Thiết bị chạy (Bắt buộc phải có GPU CUDA)
 if not torch.cuda.is_available():
     print("[!] LỖI: Không phát hiện thấy GPU CUDA! Hệ thống bắt buộc phải sử dụng GPU để chạy.")
@@ -43,6 +47,20 @@ if not torch.cuda.is_available():
 
 DEVICE = "cuda"
 print(f"[FaceNet Pipeline] Thiết bị chạy: {DEVICE}")
+
+# ══════════════════════════════════════════════════════════════════
+# HÀM TẠO GSTREAMER PIPELINE CHO CAMERA CSI JETSON
+# ══════════════════════════════════════════════════════════════════
+def get_gstreamer_pipeline(sensor_id=0, width=1280, height=720, flip_method=2):
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM),width={width},height={height},format=NV12,framerate=30/1 ! "
+        f"nvvidconv flip-method={flip_method} ! "
+        f"video/x-raw,format=BGRx ! "
+        f"videoconvert ! "
+        f"video/x-raw,format=BGR ! "
+        f"appsink drop=true max-buffers=1 sync=false"
+    )
 
 # ══════════════════════════════════════════════════════════════════
 # CHUYỂN ĐỔI EMBEDDING ↔ BYTES
@@ -59,9 +77,7 @@ def embedding_to_bytes(emb: np.ndarray) -> bytes:
 # TRUY VẤN POSTGRESQL DATABASE
 # ══════════════════════════════════════════════════════════════════
 def load_registered_embeddings_db(conn) -> dict:
-    """
-    Tải tất cả FaceNet embeddings hợp lệ từ PostgreSQL.
-    """
+    """Tải tất cả FaceNet embeddings hợp lệ từ PostgreSQL."""
     sql = """
         SELECT
             s.id            AS student_id,
@@ -154,14 +170,7 @@ def record_attendance_db(conn, session_id: str, student_id: str, confidence: flo
 # XỬ LÝ CHẾ ĐỘ THƯ MỤC CỤC BỘ (LOCAL MODE FALLBACK)
 # ══════════════════════════════════════════════════════════════════
 def load_local_dataset(dataset_dir: str) -> dict:
-    """
-    Quét thư mục dataset_dir, lưu TẤT CẢ embedding riêng lẻ của từng ảnh.
-    (Không lấy trung bình — để find_best_match dùng Top-3 voting)
-    Cấu trúc:
-        dataset/
-            Nguyen_Van_A/  -> nhiều ảnh -> nhiều embeddings
-            Tran_Thi_B/
-    """
+    """Quét thư mục dataset_dir, lưu TẤT CẢ embedding riêng lẻ của từng ảnh."""
     print(f"\n[Local Mode] Đang quét thư mục dataset: {dataset_dir}")
     if not os.path.exists(dataset_dir):
         print(f"[Cảnh báo] Thư mục '{dataset_dir}' không tồn tại. Tạo mới thư mục trống.")
@@ -171,13 +180,11 @@ def load_local_dataset(dataset_dir: str) -> dict:
     cache_path = os.path.join(dataset_dir, "facenet_local_cache.pkl")
     subdirs = [d for d in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, d)) and d != "__pycache__"]
 
-    # 1. Kiểm tra tính hợp lệ của Cache tự động
     if os.path.exists(cache_path):
         try:
             with open(cache_path, "rb") as f:
                 cached_data = pickle.load(f)
             
-            # Kiểm tra xem danh sách thư mục con và các file ảnh bên trong có thay đổi không
             cached_folders = {info["student_code"]: info for info in cached_data.values()}
             if set(subdirs) == set(cached_folders.keys()):
                 cache_valid = True
@@ -185,7 +192,6 @@ def load_local_dataset(dataset_dir: str) -> dict:
                     folder = os.path.join(dataset_dir, subdir)
                     images = [f for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
                     cached_info = cached_folders.get(subdir)
-                    # Nếu danh sách file ảnh khác với danh sách trong cache
                     if not cached_info or set(images) != set(cached_info.get("images", [])):
                         cache_valid = False
                         break
@@ -233,8 +239,8 @@ def load_local_dataset(dataset_dir: str) -> dict:
                 "full_name":    student_name.replace("_", " "),
                 "student_code": student_name,
                 "research_id":  "",
-                "embeddings":   embeddings_list,   # List[np.ndarray] — từng ảnh riêng
-                "images":       images,            # Lưu danh sách file ảnh để check thay đổi
+                "embeddings":   embeddings_list,
+                "images":       images,
             }
             print(f"  ✓ {student_name} ({len(embeddings_list)} ảnh)")
 
@@ -249,21 +255,12 @@ def load_local_dataset(dataset_dir: str) -> dict:
 # HÀM SO SÁNH EMBEDDING TÌM KẾT QUẢ TỐT NHẤT
 # ══════════════════════════════════════════════════════════════════
 def find_best_match(query_emb: np.ndarray, registered: dict, enrolled_ids: set = None):
-    """
-    Top-3 Voting:
-      1. Tính cosine similarity giữa query với TẤT CẢ ảnh mẫu riêng lẻ
-         (mỗi sinh viên có thể có nhiều ảnh → nhiều embeddings)
-      2. Sắp xếp tất cả kết quả theo sim giảm dần, lấy Top 3
-      3. Tính trung bình điểm của Top 3 → so với SIMILARITY_THRESHOLD
-      4. Người chiến thắng = sinh viên xuất hiện nhiều nhất trong Top 3
-    """
-    # Duyệt qua tất cả ảnh mẫu, tạo danh sách phẳng (sid, info, emb, sim)
+    """Top-3 Voting kiểm tra độ tương đồng hệ màu."""
     all_scores = []
     for sid, info in registered.items():
         if enrolled_ids is not None and sid not in enrolled_ids:
             continue
 
-        # Hỗ trợ cả cấu trúc cũ (embedding đơn) lẫn mới (embeddings list)
         emb_list = info.get("embeddings") or [info.get("embedding")]
         for emb in emb_list:
             if emb is None:
@@ -274,20 +271,15 @@ def find_best_match(query_emb: np.ndarray, registered: dict, enrolled_ids: set =
     if not all_scores:
         return None, None, -1.0
 
-    # Sắp xếp giảm dần, lấy Top 3
     all_scores.sort(key=lambda x: x[0], reverse=True)
     top3 = all_scores[:3]
-
-    # Tính trung bình điểm Top 3
     avg_sim = sum(s[0] for s in top3) / len(top3)
 
-    # Đếm vote: sinh viên nào xuất hiện nhiều nhất trong Top 3
     from collections import Counter
-    vote_counter = Counter(s[1] for s in top3)   # {sid: count}
+    vote_counter = Counter(s[1] for s in top3)
     winner_sid   = vote_counter.most_common(1)[0][0]
     winner_info  = registered[winner_sid]
 
-    # Log chi tiết để tinh chỉnh ngưỡng
     names = [registered[s[1]]["full_name"] for s in top3]
     sims  = [round(s[0], 4) for s in top3]
     print(f"    [Top3] {list(zip(names, sims))} | avg={avg_sim:.4f} | winner={winner_info['full_name']}")
@@ -300,27 +292,18 @@ def find_best_match(query_emb: np.ndarray, registered: dict, enrolled_ids: set =
 # XỬ LÝ FRAME CAMERA (SNAPSHOT)
 # ══════════════════════════════════════════════════════════════════
 def process_frame(frame: np.ndarray):
-    """
-    Xử lý 1 khung hình camera: Phát hiện người -> Trích xuất mặt -> Tính embedding
-    """
-    # 1. Phát hiện người bằng YOLOv8
+    """Xử lý 1 khung hình camera: Phát hiện người -> Trích xuất mặt -> Tính embedding"""
     image, persons = detect_person(frame)
     if not persons:
         return None, None
 
     for person in persons:
-        # 2. Cắt vùng ROI chứa người
         roi = crop_person(image, person)
-
-        # 3. Căn chỉnh khuôn mặt bằng MTCNN
         face_tensor = align_face(roi)
         if face_tensor is not None:
-            # 4. Trích xuất FaceNet Embedding
             embedding = get_embedding(face_tensor)
             if embedding is not None:
-                # Trả về embedding dạng NumPy array và box người
                 return embedding.numpy(), person
-
     return None, None
 
 # ══════════════════════════════════════════════════════════════════
@@ -344,15 +327,12 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             conn = psycopg2.connect(**DB_CONFIG)
             print("[DB] Kết nối PostgreSQL thành công.")
             
-            # Kiểm tra session học
             session_info = get_session_info(conn, session_id)
             print(f"[Session] Lớp: {session_info['class_code']} - {session_info['subject_name']}")
             
-            # Lấy danh sách SV của lớp
             enrolled_ids = get_enrolled_students(conn, session_id)
             print(f"[Session] Sĩ số lớp: {len(enrolled_ids)} sinh viên")
             
-            # Load embeddings
             registered = load_registered_embeddings_db(conn)
         except Exception as e:
             print(f"[Lỗi DB] Không kết nối được cơ sở dữ liệu: {e}")
@@ -360,7 +340,6 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             is_local = True
             registered = load_local_dataset(dataset_dir)
 
-    # Lọc sinh viên hợp lệ (chỉ áp dụng cho chế độ PostgreSQL)
     eligible = registered
     if not is_local and enrolled_ids is not None:
         eligible = {sid: info for sid, info in registered.items() if sid in enrolled_ids}
@@ -372,16 +351,26 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             conn.close()
         return
 
-    # 2. KHỞI CHẠY CAMERA VÀ ĐỐI SÁNH
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    # 2. KHỞI CHẠY CAMERA VÀ ĐỐI SÁNH VỚI GSTREAMER HOẶC V4L2
+    if USE_CSI and str(CAMERA_INDEX).isdigit():
+        print(f"[Camera] Đang mở Camera CSI (Sensor ID: {CAMERA_INDEX}) qua GStreamer...")
+        gstreamer_str = get_gstreamer_pipeline(sensor_id=int(CAMERA_INDEX))
+        cap = cv2.VideoCapture(gstreamer_str, cv2.CAP_GSTREAMER)
+    else:
+        print(f"[Camera] Đang mở Webcam thông thường (Index: {CAMERA_INDEX})...")
+        cap = cv2.VideoCapture(int(CAMERA_INDEX) if str(CAMERA_INDEX).isdigit() else CAMERA_INDEX)
+
     if not cap.isOpened():
-        print(f"[!] Không mở được camera (index={CAMERA_INDEX}). Vui lòng kiểm tra lại thiết bị kết nối.")
+        print(f"[!] Không mở được camera (index={CAMERA_INDEX}). Vui lòng kiểm tra lại kết nối phần cứng.")
         if conn:
             conn.close()
         return
 
-    attended = set()  # Lưu các student_id đã điểm danh trong phiên hiện tại (RAM-only)
+    attended = set()  
     last_snapshot_time = 0.0
+    
+    # Khởi tạo bộ đệm lưu 3 khung hình liên tục (Hỗ trợ liveness check mượt mà)
+    frame_buffer = deque(maxlen=3)
 
     print("\n" + "═"*60)
     print("  🎓  HỆ THỐNG ĐIỂM DANH FACENET REALTIME ĐÃ SẴN SÀNG")
@@ -400,15 +389,17 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
 
         now = time.time()
         display = frame.copy()
+        
+        # Liên tục lưu khung hình hiện tại vào bộ đệm tuần hoàn
+        frame_buffer.append(frame.copy())
 
-        # ── KIỂM TRA CAMERA ĐÓNG BĂNG / ẢNH TĨNH GIẢ LẬP ──
+        # ── KIỂM TRA CAMERA ĐÓNG BĂNG ──
         if prev_frame is not None:
-            # Nếu hai khung hình giống hệt nhau (chênh lệch trung bình = 0)
             diff = cv2.absdiff(frame, prev_frame)
             mean_diff = np.mean(diff)
             if mean_diff == 0.0:
                 ts = datetime.now().strftime("%H:%M:%S")
-                print(f"[{ts}] [LỖI] Phát hiện luồng camera bị đóng băng hoặc sử dụng ảnh tĩnh làm đầu vào!")
+                print(f"[{ts}] [LỖI] Phát hiện luồng camera bị đóng băng!")
                 cv2.putText(display, "ERROR: STATIC INPUT FEED!", (15, 100), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 cv2.imshow("FaceNet - Diem Danh Tu Dong", display)
@@ -419,7 +410,7 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
 
         prev_frame = frame.copy()
 
-        # Real-time preview: Vẽ box xanh lá cho tất cả mọi người phát hiện được bằng YOLOv8
+        # Real-time preview: Phát hiện người bằng YOLOv8
         persons = detect_person(frame)
         for person in persons:
             cv2.rectangle(display, 
@@ -427,33 +418,31 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
                           (person["x2"], person["y2"]), 
                           (0, 255, 0), 2)
 
-        # Xử lý snapshot sau mỗi khoảng cooldown (SNAPSHOT_COOLDOWN)
+        # Xử lý snapshot sau mỗi khoảng cooldown (Không dùng time.sleep)
         if persons and (now - last_snapshot_time >= SNAPSHOT_COOLDOWN):
+            # Chỉ xử lý khi bộ đệm thu thập đủ ít nhất 3 frames gần nhất
+            if len(frame_buffer) < 3:
+                continue
+
             last_snapshot_time = now
             ts = datetime.now().strftime("%H:%M:%S")
-            print(f"\n[{ts}] Phát hiện người -> Đang chụp chuỗi khung hình để kiểm tra tính sống động (Liveness Check)...")
+            print(f"\n[{ts}] Kiểm tra liveness (MAD) dựa trên dữ liệu bộ đệm...")
 
-            # ── CHỤP CHUỖI 3 KHUNG HÌNH (Liveness Sequence) ──
-            frames_seq = [frame.copy()]
-            for _ in range(2):
-                time.sleep(0.12)  # Đợi 120ms giữa các frame
-                ret_seq, frame_seq = cap.read()
-                if ret_seq:
-                    frames_seq.append(frame_seq)
-                else:
-                    frames_seq.append(frame.copy())
-
-            # Căn chỉnh khuôn mặt trên tất cả các khung hình đã chụp
             aligned_faces = []
-            person_box = persons[0]  # Lưu box người để vẽ nhãn
+            person_box = persons[0]  
+            buffer_list = list(frame_buffer)
             
-            for f in frames_seq:
-                persons_seq = detect_person(f)
+            for idx, f in enumerate(buffer_list):
+                # Khung hình cuối cùng trong mảng chính là khung hình hiện tại (đã chạy YOLO)
+                if idx == len(buffer_list) - 1:
+                    persons_seq = persons
+                else:
+                    persons_seq = detect_person(f)
+                    
                 if persons_seq:
                     roi_seq = crop_person(f, persons_seq[0])
                     face_tensor_seq = align_face(roi_seq)
                     if face_tensor_seq is not None:
-                        # Đổi tensor FaceNet (3, 160, 160) về ảnh grayscale numpy [0, 255]
                         face_np = face_tensor_seq.permute(1, 2, 0).cpu().numpy()
                         face_np = ((face_np * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
                         face_gray = cv2.cvtColor(face_np, cv2.COLOR_RGB2GRAY)
@@ -464,17 +453,12 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
             mean_mad = 0.0
             
             if len(aligned_faces) == 3:
-                # Tính độ chênh lệch tuyệt đối trung bình (MAD) giữa các ảnh đã căn chỉnh
                 diff1 = cv2.absdiff(aligned_faces[0], aligned_faces[1])
                 diff2 = cv2.absdiff(aligned_faces[1], aligned_faces[2])
                 mad1 = np.mean(diff1)
                 mad2 = np.mean(diff2)
                 mean_mad = (mad1 + mad2) / 2.0
                 
-                # Ngưỡng chống giả mạo ảnh tĩnh:
-                # Nếu ảnh tĩnh (ảnh in trên giấy/điện thoại), sau khi căn chỉnh mắt
-                # các chi tiết sẽ trùng khít hoàn toàn (chỉ lệch do nhiễu cảm biến < 1.4).
-                # Người thật sẽ luôn có chuyển động mắt nhấp nháy, thở, hoặc cơ mặt (MAD >= 1.4).
                 if mean_mad < 1.4:
                     is_spoof = True
             else:
@@ -482,26 +466,19 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
                 continue
 
             if is_spoof:
-                print(f"[{ts}] [LỖI] PHÁT HIỆN SỬ DỤNG ẢNH TĨNH GIẢ MẠO! Độ biến thiên MAD: {mean_mad:.4f}")
+                print(f"[{ts}] [LỖI] PHÁT HIỆN GIẢ MẠO! Độ biến thiên MAD: {mean_mad:.4f}")
                 label = "LOI: ANH TINH GIA MAO!"
-                color = (0, 0, 255)  # Màu đỏ cảnh báo
+                color = (0, 0, 255) 
                 
-                # Ghi nhận lỗi giả mạo lên màn hình
                 if person_box is not None:
-                    cv2.rectangle(display, 
-                                  (person_box["x1"], person_box["y1"]), 
-                                  (person_box["x2"], person_box["y2"]), 
-                                  color, 3)
-                    cv2.putText(display, label, 
-                                (person_box["x1"], max(person_box["y1"] - 10, 20)), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+                    cv2.rectangle(display, (person_box["x1"], person_box["y1"]), (person_box["x2"], person_box["y2"]), color, 3)
+                    cv2.putText(display, label, (person_box["x1"], max(person_box["y1"] - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
                 continue
 
-            print(f"[{ts}] ✓ Liveness Check thông qua. Độ biến thiên MAD: {mean_mad:.4f}. Tiến hành đối sánh...")
+            print(f"[{ts}] ✓ Liveness thông qua. Độ biến thiên MAD: {mean_mad:.4f}. Tiến hành đối sánh...")
 
-            # ── TIẾN HÀNH ĐỐI SÁNH EMBEDDING (KHI LÀ NGƯỜI THẬT) ──
-            # Lấy khuôn mặt cuối cùng trong chuỗi để nhận diện
-            last_roi = crop_person(frames_seq[-1], persons[0])
+            # ── TIẾN HÀNH ĐỐI SÁNH EMBEDDING KHI LÀ NGƯỜI THẬT ──
+            last_roi = crop_person(buffer_list[-1], persons[0])
             last_face_tensor = align_face(last_roi)
             
             if last_face_tensor is None:
@@ -515,33 +492,28 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
                 
             query_emb = embedding_tensor.numpy()
 
-            # Đối sánh tìm sinh viên khớp nhất
-            matched_id, matched_info, similarity = find_best_match(
-                query_emb, eligible, enrolled_ids
-            )
-            del query_emb  # Giải phóng vector tạm khỏi RAM
+            matched_id, matched_info, similarity = find_best_match(query_emb, eligible, enrolled_ids)
+            del query_emb  
 
-            # Xử lý nhãn hiển thị và logic điểm danh
             if matched_id is None:
                 label = f"UNKNOWN (sim={similarity:.3f})"
-                color = (0, 0, 255)  # Màu đỏ (Không khớp)
+                color = (0, 0, 255)
                 print(f"[{ts}] UNKNOWN — Độ tương đồng tốt nhất: {similarity:.4f}")
             
             elif matched_id in attended:
                 name = matched_info["full_name"]
                 code = matched_info["student_code"]
                 label = f"{name} ({code}) - Attended"
-                color = (0, 165, 255)  # Màu cam (Đã điểm danh rồi)
+                color = (0, 165, 255)
                 print(f"[{ts}] Sinh viên {name} ({code}) đã điểm danh trước đó.")
             
             else:
                 name = matched_info["full_name"]
                 code = matched_info["student_code"]
                 label = f"{name} ({code}) {similarity:.3f}"
-                color = (0, 255, 0)  # Màu xanh lá (Điểm danh thành công)
+                color = (0, 255, 0)
                 print(f"[{ts}] ✓ PRESENT: {name} | Mã số: {code} | Độ khớp: {similarity:.4f}")
 
-                # Điểm danh thành công: Lưu vào Postgres (nếu không ở chế độ local)
                 if not is_local and conn is not None:
                     try:
                         record_attendance_db(conn, session_id, matched_id, similarity)
@@ -549,37 +521,27 @@ def run_pipeline(session_id: str = None, is_local: bool = False, dataset_dir: st
                     except Exception as db_err:
                         print(f"       [Lỗi DB] Không ghi được điểm danh: {db_err}")
 
-                # Thêm vào danh sách đã điểm danh trong phiên
                 attended.add(matched_id)
 
-            # Vẽ nhãn nhận diện trên màn hình
             if person_box is not None:
-                cv2.rectangle(display, 
-                              (person_box["x1"], person_box["y1"]), 
-                              (person_box["x2"], person_box["y2"]), 
-                              color, 3)
-                cv2.putText(display, label, 
-                            (person_box["x1"], max(person_box["y1"] - 10, 20)), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.rectangle(display, (person_box["x1"], person_box["y1"]), (person_box["x2"], person_box["y2"]), color, 3)
+                cv2.putText(display, label, (person_box["x1"], max(person_box["y1"] - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-        # Hiển thị số lượng điểm danh ở góc màn hình
-        cv2.putText(display, f"Diem danh: {len(attended)}/{len(eligible)}", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(display, f"{session_info['class_code']} | Q=Thoat", 
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        # Hiển thị HUD thông tin hệ thống
+        cv2.putText(display, f"Diem danh: {len(attended)}/{len(eligible)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(display, f"{session_info['class_code']} | Q=Thoat", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
         cv2.imshow("FaceNet - Diem Danh Tu Dong", display)
         
-        # Nhấn phím 'q' để dừng camera
         if cv2.waitKey(1) & 0xFF == ord("q"):
             print("\n[Hệ thống] Người dùng yêu cầu thoát.")
             break
 
-    # DỌN DẸP BỘ NHỚ VÀ ĐÓNG KẾT NỐI
     cap.release()
     cv2.destroyAllWindows()
     attended.clear()
     registered.clear()
+    frame_buffer.clear()
     if conn:
         conn.close()
     print("\n[Hệ thống] Đã kết thúc phiên nhận diện và giải phóng thiết bị.\n")
@@ -589,12 +551,10 @@ if __name__ == "__main__":
     parser.add_argument("session_id", nargs="?", default=None, help="UUID phiên học trong database (PostgreSQL)")
     parser.add_argument("--local",     action="store_true",    help="Chạy chế độ cục bộ không kết nối PostgreSQL")
     parser.add_argument("--dataset",   default="dataset",      help="Đường dẫn đến thư mục chứa ảnh đối sánh cục bộ")
-    parser.add_argument("--threshold", type=float, default=None,
-                        help="Ngưỡng cosine similarity (0.0-1.0). Mặc định: FACENET_THRESHOLD trong .env hoặc 0.65")
+    parser.add_argument("--threshold", type=float, default=None, help="Ngưỡng cosine similarity (0.0-1.0)")
 
     args = parser.parse_args()
 
-    # Ghi đè ngưỡng nếu truyền vào CLI
     if args.threshold is not None:
         if not 0.0 < args.threshold < 1.0:
             print("[Lỗi] --threshold phải nằm trong khoảng (0.0, 1.0)")
@@ -605,11 +565,9 @@ if __name__ == "__main__":
     if args.local or args.session_id is None:
         run_pipeline(is_local=True, dataset_dir=args.dataset)
     else:
-        # Validate định dạng UUID trước khi chạy
         try:
             uuid.UUID(args.session_id.strip())
             run_pipeline(session_id=args.session_id.strip(), is_local=False, dataset_dir=args.dataset)
         except ValueError:
             print(f"[Lỗi] session_id không đúng định dạng UUID: '{args.session_id}'")
-            print("Chạy ở chế độ local bằng cách truyền: python facenet_pipeline.py --local")
             sys.exit(1)
